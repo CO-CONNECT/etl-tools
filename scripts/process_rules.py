@@ -1,43 +1,26 @@
 import argparse
 import json
-from coconnect.cdm import CommonDataModel
-from coconnect.cdm import Person, ConditionOccurrence, Measurement, Observation
-from coconnect.tools import load_csv
+from coconnect.cdm import (
+    CommonDataModel,
+    get_cdm_class
+)
 
+from coconnect.cdm import (
+    Person,
+    ConditionOccurrence,
+    Measurement,
+    Observation
+)
 
-def apply_rules(cdm,obj,rules):
-    for destination_field,rule in rules.items():
-        source_table = rule['source_table']
-        source_field = rule['source_field']
-        operations = None
-        if 'operations' in rule:
-            operations = rule['operations']
-        term_mapping = None
-        if 'term_mapping' in rule:
-            term_mapping = rule['term_mapping']
+from coconnect.tools import (
+    load_csv,
+    apply_rules
+)
 
-        #make a copy of the input data column slice 
-        series = cdm.inputs[source_table][source_field].copy()
-
-        if operations is not None:
-            for operation in operations:
-                function = cdm.tools[operation]
-                series = function(series)
-                
-        if term_mapping is not None:
-            if isinstance(term_mapping,dict):
-                # value level mapping
-                # - term_mapping is a dictionary between values and concepts
-                # - map values in the input data, based on this map
-                series = series.map(term_mapping)
-            else:
-                # field level mapping.
-                # - term_mapping is the concept_id
-                # - set all values in this column to it
-                series.values[:] = term_mapping
-
-        obj[destination_field].series = series
-
+class TableNotFoundError(Exception):
+    pass
+class FieldNotFoundError(Exception):
+    pass
 
 def main():
     parser = argparse.ArgumentParser(description='Process some integers.')
@@ -56,7 +39,7 @@ def main():
 
     with open(args.rules) as rules_file:
         config = json.load(rules_file)
-    
+
     inputs = load_csv(
         {
             x.split("/")[-1].lower():x
@@ -67,7 +50,7 @@ def main():
     name = config['metadata']['dataset']
 
     #build an object to store the cdm
-    cdm = CommonDataModel(name='test',
+    cdm = CommonDataModel(name=name,
                           inputs=inputs,
                           output_folder=args.out_dir)
 
@@ -80,9 +63,10 @@ def main():
         for i,rules in enumerate(rules_set):
             #make a new object for the cdm object
             #Example:
-            # destination_field : person
+            # destination_table : person
+            # get_cdm_class returns <Person>
             # obj : Person()
-            obj = cdm.get_cdm_class(destination_table)
+            obj = get_cdm_class(destination_table)()
             #set the name of the object
             obj.set_name(f"{destination_table}_{i}")
             #call the apply_rules function to setup how to modify the inputs
@@ -90,9 +74,9 @@ def main():
             apply_rules(cdm,obj,rules)
             #register this object with the CDM model, so it can be processed
             cdm.add(obj)
-                            
     cdm.process()
-
+    print ('Finished Producing',cdm.keys())
+    
 if __name__ == "__main__":
     main()
 

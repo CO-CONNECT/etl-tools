@@ -19,10 +19,11 @@ class BadInputs(Exception):
     pass
 
 class DataType(object):
-    def __init__(self, dtype: str, required: bool):
+    def __init__(self, dtype: str, required: bool, pk=False):
         self.series = None
         self.dtype = dtype
         self.required = required
+        self.pk = pk
 
 class DataFormatter(collections.OrderedDict):
     def __init__(self):
@@ -53,39 +54,34 @@ class Base(object):
            None
         """
         self.name = _type
+        self._type = _type
+        self._meta = {}
         self.logger = Logger(self.name)
-        self.logger.debug("Initialised Class")
 
         self.dtypes = DataFormatter()
+        self.fields = self.get_field_names()
 
-        self.fields = [
+        if len(self.fields) == 0:
+            raise Exception("something misconfigured - cannot find any DataTypes for {self.name}")
+
+        #print a check to see what cdm objects have been initialised
+        self.logger.debug(self.get_destination_fields())
+        self.__df = None
+
+    def get_field_names(self):
+        return [
             item
             for item in self.__dict__.keys()
             if isinstance(getattr(self,item),DataType)
         ]
 
-        if len(self.fields) == 0:
-            raise Exception("something misconfigured - cannot find any DataTypes for {self.name}")
+    def get_ordering(self):
+        return [
+            field
+            for field in self.fields
+            if getattr(self,field).pk == True
+        ]
         
-        #print a check to see what cdm objects have been initialised
-        self.logger.debug(self.get_destination_fields())
-
-    # @staticmethod
-    # def finalise(self,df):
-    #     """
-    #     Finalise function, expected to be overloaded by children classes
-    #     """
-    #     ninitial = len(df)
-    #     df = df[~df['person_id'].isna()]
-    #     nfinal = len(df)
-    #     if nfinal < ninitial:
-    #         self.logger.error(f"{nfinal}/{ninitial} rows survived person_id NaN value filtering")
-    #         self.logger.error(f"{100*(ninitial-nfinal)/ninitial:.2f}% of person_ids in this table are not present in the person table.")
-    #         self.logger.warning("If this is synthetic data... it's probably not a problem")
-    #         self.logger.warning(f"Check that you have the right person_id field mapped for {self.name}")
-
-    #     return df
-
     def __getitem__(self, key):
         return getattr(self, key)
 
@@ -100,7 +96,7 @@ class Base(object):
         """
         define function, expected to be overloaded by the user defining the object
         """
-        return self
+        pass
 
     def get_destination_fields(self):
         """
@@ -127,18 +123,27 @@ class Base(object):
         #add objects to this class
         self.__dict__.update(objs)
 
-        #execute the define function that is likely to define the cdm fields based on inputs
-        self = self.define(self)
+        #execute the define function
+        #the default define() does nothing
+        #this is only executed if the CDM has been build via decorators
+        #or define functions have been specified for this object
+        # it will build the inputs from these functions
+        self.define(self)
 
+        #build the dataframe for this object
+        _ = self.get_df()
         
-    def get_df(self):
+    def get_df(self,force_rebuild=False):
         """
         Retrieve a dataframe from the current object
 
         Returns:
            pandas.Dataframe: extracted dataframe of the cdm object
         """
-
+        #if the dataframe has already been built.. just return it
+        if not self.__df is None and not force_rebuild:
+            return self.__df 
+        
         #get a dict of all series
         #each object is a pandas series
         dfs = {}
@@ -146,20 +151,16 @@ class Base(object):
         for field in self.fields:
             obj = getattr(self,field)
             series = obj.series
-            #required = obj.required
-            #dtype = obj.dtype
-            
             if series is None:
                 #if required:
                 #    self.logger.error(f"{field} is all null/none or has not been set/defined")
                 #    raise RequiredFieldIsNone(f"{field} is a required for {self.name}.")
                 continue
+
             #rename the column to be the final destination field name
             series = series.rename(field)
-               
             #register the new series
             dfs[field] = series
-
 
         #if there's none defined, dont do anything
         if len(dfs) == 0:
@@ -178,6 +179,10 @@ class Base(object):
 
         #find which fields in the cdm havent been defined
         missing_fields = set(self.fields) - set(df.columns)
+
+        self._meta['defined_columns'] = df.columns.tolist()
+        self._meta['undefined_columns'] = list(missing_fields)
+                
         #set these to a nan/null series
         for field in missing_fields:
             df[field] = np.NaN
@@ -185,15 +190,51 @@ class Base(object):
         #simply order the columns 
         df = df[self.fields]
 
+        df = self.finalise(df)
+        df = self.format(df)
+
+        #register the df
+        self.__df = df
         return df
 
-    @classmethod
-    def format(cls,df):
-        instance = cls()
+    def format(self,df):
         for col in df.columns:
-            obj = getattr(instance,col)
+            obj = getattr(self,col)
             dtype = obj.dtype
-            formatter_function = instance.dtypes[dtype]
+            formatter_function = self.dtypes[dtype]
             df[col] = formatter_function(df[col])
         
         return df
+
+    def finalise(self,df):
+        """
+        Finalise function, expected to be overloaded by children classes
+        """
+        
+        required_fields = [
+            field
+            for field in self.get_field_names()
+            if getattr(self,field).required == True
+        ]
+        self._meta['required_fields'] = {}
+        for field in required_fields:
+            nbefore = len(df)
+            df = df[~df[field].isna()]
+            nafter = len(df)
+
+            ndiff = nbefore - nafter
+            if ndiff>0:
+                self.logger.warning(f"Requiring non-null values in {field} removed {ndiff} rows, leaving {nafter} rows.")
+            self._meta['required_fields'][field] = {
+                'before':nbefore,
+                'after':nafter
+            }
+            #if 'concept_id' in field:
+            #    values = df[field].unique().tolist()
+            #    self._meta['required_fields'][field]['concept_values'] = values
+
+
+        df = df.sort_values(self.get_ordering())
+        
+        return df
+
