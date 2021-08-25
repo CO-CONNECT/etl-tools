@@ -29,6 +29,11 @@ class InputData:
             key:self[key]
             for key in self.keys()
         }
+
+    def __iter__(self):
+        return iter(self.__file_readers)
+    
+    #def __next__(self)
         
     def keys(self):
         return self.__file_readers.keys()
@@ -99,7 +104,7 @@ def load_json(f_in):
     return data
 
 
-def load_csv(_map,chunksize=None,nrows=None,lower_col_names=False,load_path="",rules=None):
+def load_csv(_map,sep=',',chunksize=None,nrows=None,lower_col_names=False,load_path="",rules=None):
 
     logger = Logger("coconnect.tools.load_csv")
     
@@ -141,8 +146,9 @@ def load_csv(_map,chunksize=None,nrows=None,lower_col_names=False,load_path="",r
             fname = obj['file']
             fields = obj['fields']
             
-        df = pd.read_csv(load_path+fname,chunksize=chunksize,nrows=nrows,dtype=str,usecols=fields)
-
+        df = pd.read_csv(load_path+fname,sep=sep,chunksize=chunksize,nrows=nrows,keep_default_na=False,dtype=str,usecols=fields)
+        df.meta = {'original_file':load_path+fname}
+        
         if isinstance(df,pd.DataFrame):
             #this should be removed
             if lower_col_names:
@@ -151,6 +157,11 @@ def load_csv(_map,chunksize=None,nrows=None,lower_col_names=False,load_path="",r
         retval[key] = df
 
     return retval
+
+def load_tsv(_map,chunksize=None,nrows=None,lower_col_names=False,load_path="",rules=None):
+    sep="\t"
+    return load_csv(_map,sep=sep,chunksize=chunksize,nrows=nrows,
+                    lower_col_names=lower_col_names,load_path=load_path,rules=rules)
 
 
 def get_file_map_from_dir(_dir):
